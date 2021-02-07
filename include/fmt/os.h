@@ -8,11 +8,6 @@
 #ifndef FMT_OS_H_
 #define FMT_OS_H_
 
-#if defined(__MINGW32__) || defined(__CYGWIN__)
-// Workaround MinGW bug https://sourceforge.net/p/mingw/bugs/2024/.
-#  undef __STRICT_ANSI__
-#endif
-
 #include <cerrno>
 #include <clocale>  // for locale_t
 #include <cstddef>
@@ -29,7 +24,8 @@
 #if FMT_HAS_INCLUDE("winapifamily.h")
 #  include <winapifamily.h>
 #endif
-#if FMT_HAS_INCLUDE("fcntl.h") && \
+#if (FMT_HAS_INCLUDE(<fcntl.h>) || defined(__APPLE__) || \
+     defined(__linux__)) &&                              \
     (!defined(WINAPI_FAMILY) || (WINAPI_FAMILY == WINAPI_FAMILY_DESKTOP_APP))
 #  include <fcntl.h>  // for O_RDONLY
 #  define FMT_USE_FCNTL 1
@@ -278,7 +274,9 @@ class file {
     RDONLY = FMT_POSIX(O_RDONLY),  // Open for reading only.
     WRONLY = FMT_POSIX(O_WRONLY),  // Open for writing only.
     RDWR = FMT_POSIX(O_RDWR),      // Open for reading and writing.
-    CREATE = FMT_POSIX(O_CREAT)    // Create if the file doesn't exist.
+    CREATE = FMT_POSIX(O_CREAT),   // Create if the file doesn't exist.
+    APPEND = FMT_POSIX(O_APPEND),  // Open in append mode.
+    TRUNC = FMT_POSIX(O_TRUNC)     // Truncate the content of the file.
   };
 
   // Constructs a file object which doesn't represent any file.
@@ -343,47 +341,104 @@ class file {
 // Returns the memory page size.
 long getpagesize();
 
-// A fast output stream which is not thread-safe.
-class ostream : private detail::buffer<char> {
+namespace detail {
+
+struct buffer_size {
+  size_t value = 0;
+  buffer_size operator=(size_t val) const {
+    auto bs = buffer_size();
+    bs.value = val;
+    return bs;
+  }
+};
+
+struct ostream_params {
+  int oflag = file::WRONLY | file::CREATE | file::TRUNC;
+  size_t buffer_size = BUFSIZ > 32768 ? BUFSIZ : 32768;
+
+  ostream_params() {}
+
+  template <typename... T>
+  ostream_params(T... params, int new_oflag) : ostream_params(params...) {
+    oflag = new_oflag;
+  }
+
+  template <typename... T>
+  ostream_params(T... params, detail::buffer_size bs)
+      : ostream_params(params...) {
+    this->buffer_size = bs.value;
+  }
+};
+}  // namespace detail
+
+static constexpr detail::buffer_size buffer_size;
+
+/** A fast output stream which is not thread-safe. */
+class ostream final : private detail::buffer<char> {
  private:
   file file_;
-  char buffer_[BUFSIZ];
 
   void flush() {
     if (size() == 0) return;
-    file_.write(buffer_, size());
+    file_.write(data(), size());
     clear();
   }
 
-  void grow(size_t) final;
+  FMT_API void grow(size_t) override final;
 
-  ostream(cstring_view path, int oflag)
-      : buffer<char>(buffer_, 0, BUFSIZ), file_(path, oflag) {}
+  ostream(cstring_view path, const detail::ostream_params& params)
+      : file_(path, params.oflag) {
+    set(new char[params.buffer_size], params.buffer_size);
+  }
 
  public:
   ostream(ostream&& other)
-      : buffer<char>(buffer_, 0, BUFSIZ), file_(std::move(other.file_)) {
-    append(other.begin(), other.end());
-    other.clear();
+      : detail::buffer<char>(other.data(), other.size(), other.capacity()),
+        file_(std::move(other.file_)) {
+    other.set(nullptr, 0);
   }
-  ~ostream() { flush(); }
+  ~ostream() {
+    flush();
+    delete[] data();
+  }
 
-  friend ostream output_file(cstring_view path, int oflag);
+  template <typename... T>
+  friend ostream output_file(cstring_view path, T... params);
 
   void close() {
     flush();
     file_.close();
   }
 
+  /**
+    Formats ``args`` according to specifications in ``format_str`` and writes
+    the output to the file.
+   */
   template <typename S, typename... Args>
-  void print(const S& format_str, const Args&... args) {
-    format_to(detail::buffer_appender<char>(*this), format_str, args...);
+  void print(const S& format_str, Args&&... args) {
+    format_to(detail::buffer_appender<char>(*this), format_str,
+              std::forward<Args>(args)...);
   }
 };
 
-inline ostream output_file(cstring_view path,
-                           int oflag = file::WRONLY | file::CREATE) {
-  return {path, oflag};
+/**
+  \rst
+  Opens a file for writing. Supported parameters passed in *params*:
+
+  * ``<integer>``: Flags passed to `open
+    <https://pubs.opengroup.org/onlinepubs/007904875/functions/open.html>`_
+    (``file::WRONLY | file::CREATE`` by default)
+  * ``buffer_size=<integer>``: Output buffer size
+
+  **Example**::
+
+    auto out = fmt::output_file("guide.txt");
+    out.print("Don't {}", "Panic");
+  \endrst
+ */
+template <typename... T>
+inline ostream output_file(cstring_view path, T... params) {
+  return {path, detail::ostream_params(params...)};
 }
 #endif  // FMT_USE_FCNTL
 

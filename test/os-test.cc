@@ -287,9 +287,15 @@ TEST(BufferedFileTest, Fileno) {
   EXPECT_READ(copy, FILE_CONTENT);
 }
 
+TEST(OStreamTest, Move) {
+  fmt::ostream out = fmt::output_file("test-file");
+  fmt::ostream moved(std::move(out));
+  moved.print("hello");
+}
+
 TEST(OStreamTest, Print) {
   fmt::ostream out = fmt::output_file("test-file");
-  out.print("The answer is {}.\n", 42);
+  out.print("The answer is {}.\n", fmt::join(std::initializer_list<int>{42}, ", "));
   out.close();
   file in("test-file", file::RDONLY);
   EXPECT_READ(in, "The answer is 42.\n");
@@ -303,6 +309,27 @@ TEST(OStreamTest, BufferBoundary) {
   out.close();
   file in("test-file", file::RDONLY);
   EXPECT_READ(in, str + str);
+}
+
+TEST(OStreamTest, BufferSize) {
+  fmt::ostream out = fmt::output_file("test-file", fmt::buffer_size=1);
+  out.print("{}", "foo");
+  out.close();
+  file in("test-file", file::RDONLY);
+  EXPECT_READ(in, "foo");
+}
+
+TEST(OStreamTest, Truncate) {
+  {
+    fmt::ostream out = fmt::output_file("test-file");
+    out.print("0123456789");
+  }
+  {
+    fmt::ostream out = fmt::output_file("test-file");
+    out.print("foo");
+  }
+  file in("test-file", file::RDONLY);
+  EXPECT_EQ("foo", read(in, 4));
 }
 
 TEST(FileTest, DefaultCtor) {

@@ -91,8 +91,6 @@ add_fmt_test(assert-test)
 add_fmt_test(chrono-test)
 add_fmt_test(color-test)
 add_fmt_test(core-test)
-add_fmt_test(grisu-test)
-target_compile_definitions(grisu-test PRIVATE FMT_USE_GRISU=1)
 add_fmt_test(gtest-extra-test)
 add_fmt_test(format-test mock-allocator.h)
 if (MSVC)
@@ -105,9 +103,15 @@ add_fmt_test(locale-test)
 add_fmt_test(ostream-test)
 add_fmt_test(compile-test)
 add_fmt_test(printf-test)
-add_fmt_test(custom-formatter-test)
 add_fmt_test(ranges-test)
 add_fmt_test(scan-test)
+
+if (NOT MSVC)
+  # FMT_ENFORCE_COMPILE_STRING is not supported under MSVC due to compiler bugs.
+  add_fmt_test(enforce-compile-string-test)
+  target_compile_definitions(enforce-compile-string-test PRIVATE
+                             -DFMT_ENFORCE_COMPILE_STRING)
+endif ()
 
 if (NOT DEFINED MSVC_STATIC_RUNTIME AND MSVC)
   foreach (flag_var
@@ -151,7 +155,7 @@ endif ()
 
 message(STATUS "FMT_PEDANTIC: ${FMT_PEDANTIC}")
 
-if (FMT_PEDANTIC)
+if (FMT_PEDANTIC AND CXX_STANDARD LESS 20)
   # MSVC fails to compile GMock when C++17 is enabled.
   if (FMT_HAS_VARIANT AND NOT MSVC)
     add_fmt_test(std-format-test)
