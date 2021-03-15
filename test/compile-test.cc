@@ -13,10 +13,47 @@
 #  include <windows.h>
 #endif
 
+#include "fmt/chrono.h"
 #include "fmt/compile.h"
 #include "gmock.h"
 #include "gtest-extra.h"
 #include "util.h"
+
+TEST(IteratorTest, TruncatingIterator) {
+  char* p = nullptr;
+  fmt::detail::truncating_iterator<char*> it(p, 3);
+  auto prev = it++;
+  EXPECT_EQ(prev.base(), p);
+  EXPECT_EQ(it.base(), p + 1);
+}
+
+TEST(IteratorTest, TruncatingIteratorDefaultConstruct) {
+  static_assert(std::is_default_constructible<
+                    fmt::detail::truncating_iterator<char*>>::value,
+                "");
+
+  fmt::detail::truncating_iterator<char*> it;
+  EXPECT_EQ(nullptr, it.base());
+  EXPECT_EQ(std::size_t{0}, it.count());
+}
+
+#ifdef __cpp_lib_ranges
+TEST(IteratorTest, TruncatingIteratorOutputIterator) {
+  static_assert(
+      std::output_iterator<fmt::detail::truncating_iterator<char*>, char>);
+}
+#endif
+
+TEST(IteratorTest, TruncatingBackInserter) {
+  std::string buffer;
+  auto bi = std::back_inserter(buffer);
+  fmt::detail::truncating_iterator<decltype(bi)> it(bi, 2);
+  *it++ = '4';
+  *it++ = '2';
+  *it++ = '1';
+  EXPECT_EQ(buffer.size(), 2);
+  EXPECT_EQ(buffer, "42");
+}
 
 // compiletime_prepared_parts_type_provider is useful only with relaxed
 // constexpr.
@@ -141,11 +178,65 @@ TEST(CompileTest, FormatWideString) {
 
 TEST(CompileTest, FormatSpecs) {
   EXPECT_EQ("42", fmt::format(FMT_COMPILE("{:x}"), 0x42));
+  EXPECT_EQ("1.2 ms ",
+            fmt::format(FMT_COMPILE("{:7.1%Q %q}"),
+                        std::chrono::duration<double, std::milli>(1.234)));
 }
 
-TEST(CompileTest, DynamicWidth) {
-  EXPECT_EQ("  42foo  ",
-            fmt::format(FMT_COMPILE("{:{}}{:{}}"), 42, 4, "foo", 5));
+TEST(CompileTest, DynamicFormatSpecs) {
+  EXPECT_EQ("foo  ", fmt::format(FMT_COMPILE("{:{}}"), "foo", 5));
+  EXPECT_EQ("  3.14", fmt::format(FMT_COMPILE("{:{}.{}f}"), 3.141592, 6, 2));
+  EXPECT_EQ(
+      "=1.234ms=",
+      fmt::format(FMT_COMPILE("{:=^{}.{}}"),
+                  std::chrono::duration<double, std::milli>(1.234), 9, 3));
+}
+
+TEST(CompileTest, ManualOrdering) {
+  EXPECT_EQ("42", fmt::format(FMT_COMPILE("{0}"), 42));
+  EXPECT_EQ(" -42", fmt::format(FMT_COMPILE("{0:4}"), -42));
+  EXPECT_EQ("41 43", fmt::format(FMT_COMPILE("{0} {1}"), 41, 43));
+  EXPECT_EQ("41 43", fmt::format(FMT_COMPILE("{1} {0}"), 43, 41));
+  EXPECT_EQ("41 43", fmt::format(FMT_COMPILE("{0} {2}"), 41, 42, 43));
+  EXPECT_EQ("  41   43", fmt::format(FMT_COMPILE("{1:{2}} {0:4}"), 43, 41, 4));
+  EXPECT_EQ("42 1.2 ms ",
+            fmt::format(FMT_COMPILE("{0} {1:7.1%Q %q}"), 42,
+                        std::chrono::duration<double, std::milli>(1.234)));
+  EXPECT_EQ(
+      "true 42 42 foo 0x1234 foo",
+      fmt::format(FMT_COMPILE("{0} {1} {2} {3} {4} {5}"), true, 42, 42.0f,
+                  "foo", reinterpret_cast<void*>(0x1234), test_formattable()));
+  EXPECT_EQ(L"42", fmt::format(FMT_COMPILE(L"{0}"), 42));
+}
+
+TEST(CompileTest, Named) {
+  EXPECT_EQ("42", fmt::format(FMT_COMPILE("{}"), fmt::arg("arg", 42)));
+  EXPECT_EQ("41 43", fmt::format(FMT_COMPILE("{} {}"), fmt::arg("arg", 41),
+                                 fmt::arg("arg", 43)));
+
+  EXPECT_EQ("foobar",
+            fmt::format(FMT_COMPILE("{a0}{a1}"), fmt::arg("a0", "foo"),
+                        fmt::arg("a1", "bar")));
+  EXPECT_EQ("foobar", fmt::format(FMT_COMPILE("{}{a1}"), fmt::arg("a0", "foo"),
+                                  fmt::arg("a1", "bar")));
+  EXPECT_EQ("foofoo", fmt::format(FMT_COMPILE("{a0}{}"), fmt::arg("a0", "foo"),
+                                  fmt::arg("a1", "bar")));
+  EXPECT_EQ("foobar", fmt::format(FMT_COMPILE("{0}{a1}"), fmt::arg("a0", "foo"),
+                                  fmt::arg("a1", "bar")));
+  EXPECT_EQ("foobar", fmt::format(FMT_COMPILE("{a0}{1}"), fmt::arg("a0", "foo"),
+                                  fmt::arg("a1", "bar")));
+
+  EXPECT_EQ("foobar",
+            fmt::format(FMT_COMPILE("{}{a1}"), "foo", fmt::arg("a1", "bar")));
+  EXPECT_EQ("foobar",
+            fmt::format(FMT_COMPILE("{a0}{a1}"), fmt::arg("a1", "bar"),
+                        fmt::arg("a2", "baz"), fmt::arg("a0", "foo")));
+  EXPECT_EQ(" bar foo ",
+            fmt::format(FMT_COMPILE(" {foo} {bar} "), fmt::arg("foo", "bar"),
+                        fmt::arg("bar", "foo")));
+
+  EXPECT_THROW(fmt::format(FMT_COMPILE("{invalid}"), fmt::arg("valid", 42)),
+               fmt::format_error);
 }
 
 TEST(CompileTest, FormatTo) {
@@ -169,14 +260,34 @@ TEST(CompileTest, FormatToNWithCompileMacro) {
   EXPECT_STREQ("2a", buffer);
 }
 
+TEST(CompileTest, FormattedSizeWithCompileMacro) {
+  EXPECT_EQ(2, fmt::formatted_size(FMT_COMPILE("{0}"), 42));
+  EXPECT_EQ(5, fmt::formatted_size(FMT_COMPILE("{0:<4.2f}"), 42.0));
+}
+
 TEST(CompileTest, TextAndArg) {
   EXPECT_EQ(">>>42<<<", fmt::format(FMT_COMPILE(">>>{}<<<"), 42));
   EXPECT_EQ("42!", fmt::format(FMT_COMPILE("{}!"), 42));
 }
 
-TEST(CompileTest, Empty) {
-  EXPECT_EQ("", fmt::format(FMT_COMPILE("")));
+TEST(CompileTest, UnknownFormatFallback) {
+  EXPECT_EQ(" 42 ",
+            fmt::format(FMT_COMPILE("{name:^4}"), fmt::arg("name", 42)));
+
+  std::vector<char> v;
+  fmt::format_to(std::back_inserter(v), FMT_COMPILE("{name:^4}"),
+                 fmt::arg("name", 42));
+  EXPECT_EQ(" 42 ", fmt::string_view(v.data(), v.size()));
+
+  char buffer[4];
+  auto result = fmt::format_to_n(buffer, 4, FMT_COMPILE("{name:^5}"),
+                                 fmt::arg("name", 42));
+  EXPECT_EQ(5u, result.size);
+  EXPECT_EQ(buffer + 4, result.out);
+  EXPECT_EQ(" 42 ", fmt::string_view(buffer, 4));
 }
+
+TEST(CompileTest, Empty) { EXPECT_EQ("", fmt::format(FMT_COMPILE(""))); }
 #endif
 
 #if FMT_USE_NONTYPE_TEMPLATE_PARAMETERS
@@ -253,7 +364,7 @@ TEST(CompileTimeFormattingTest, String) {
             test_format<17>(FMT_COMPILE("{} is {}"), "The answer", "42"));
 
   EXPECT_EQ("abc**", test_format<6>(FMT_COMPILE("{:*<5}"), "abc"));
-  EXPECT_EQ("**🤡**", test_format<9>(FMT_COMPILE("{:*^5}"), "🤡"));
+  EXPECT_EQ("**🤡**", test_format<9>(FMT_COMPILE("{:*^6}"), "🤡"));
 }
 
 TEST(CompileTimeFormattingTest, Combination) {

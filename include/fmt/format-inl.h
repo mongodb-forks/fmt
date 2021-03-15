@@ -9,7 +9,6 @@
 #define FMT_FORMAT_INL_H_
 
 #include <algorithm>
-#include <cassert>
 #include <cctype>
 #include <climits>
 #include <cmath>
@@ -148,7 +147,7 @@ FMT_FUNC void format_error_code(detail::buffer<char>& out, int error_code,
   if (message.size() <= inline_buffer_size - error_code_size)
     format_to(it, FMT_STRING("{}{}"), message, SEP);
   format_to(it, FMT_STRING("{}{}"), ERROR_STR, error_code);
-  assert(out.size() <= inline_buffer_size);
+  FMT_ASSERT(out.size() <= inline_buffer_size, "");
 }
 
 FMT_FUNC void report_error(format_func func, int error_code,
@@ -166,11 +165,8 @@ inline void fwrite_fully(const void* ptr, size_t size, size_t count,
   size_t written = std::fwrite(ptr, size, count, stream);
   if (written < count) FMT_THROW(system_error(errno, "cannot write to file"));
 }
-}  // namespace detail
 
-#if !defined(FMT_STATIC_THOUSANDS_SEPARATOR)
-namespace detail {
-
+#ifndef FMT_STATIC_THOUSANDS_SEPARATOR
 template <typename Locale>
 locale_ref::locale_ref(const Locale& loc) : locale_(&loc) {
   static_assert(std::is_same<Locale, std::locale>::value, "");
@@ -192,19 +188,18 @@ template <typename Char> FMT_FUNC Char decimal_point_impl(locale_ref loc) {
   return std::use_facet<std::numpunct<Char>>(loc.get<std::locale>())
       .decimal_point();
 }
-}  // namespace detail
 #else
-template <typename Char>
-FMT_FUNC std::string detail::grouping_impl(locale_ref) {
+template <typename Char> FMT_FUNC std::string grouping_impl(locale_ref) {
   return "\03";
 }
-template <typename Char> FMT_FUNC Char detail::thousands_sep_impl(locale_ref) {
+template <typename Char> FMT_FUNC Char thousands_sep_impl(locale_ref) {
   return FMT_STATIC_THOUSANDS_SEPARATOR;
 }
-template <typename Char> FMT_FUNC Char detail::decimal_point_impl(locale_ref) {
+template <typename Char> FMT_FUNC Char decimal_point_impl(locale_ref) {
   return '.';
 }
 #endif
+}  // namespace detail
 
 FMT_API FMT_FUNC format_error::~format_error() FMT_NOEXCEPT = default;
 FMT_API FMT_FUNC system_error::~system_error() FMT_NOEXCEPT = default;
@@ -1071,6 +1066,7 @@ template <typename T> const char basic_data<T>::signs[] = {0, '-', '+', ' '};
 
 #if __cplusplus < 201703L
 template <typename T> constexpr const char basic_data<T>::hex_digits[];
+template <typename T> constexpr const unsigned basic_data<T>::prefixes[];
 template <typename T> constexpr const char basic_data<T>::left_padding_shifts[];
 template <typename T>
 constexpr const char basic_data<T>::right_padding_shifts[];
@@ -1229,7 +1225,7 @@ struct accumulator {
     if (lower < n) ++upper;
   }
   void operator>>=(int shift) {
-    assert(shift == 32);
+    FMT_ASSERT(shift == 32, "");
     (void)shift;
     lower = (upper << 32) | (lower >> 32);
     upper >>= 32;
@@ -1308,7 +1304,7 @@ class bigint {
  public:
   bigint() : exp_(0) {}
   explicit bigint(uint64_t n) { assign(n); }
-  ~bigint() { assert(bigits_.capacity() <= bigits_capacity); }
+  ~bigint() { FMT_ASSERT(bigits_.capacity() <= bigits_capacity, ""); }
 
   bigint(const bigint&) = delete;
   void operator=(const bigint&) = delete;
@@ -1334,7 +1330,7 @@ class bigint {
   int num_bigits() const { return static_cast<int>(bigits_.size()) + exp_; }
 
   FMT_NOINLINE bigint& operator<<=(int shift) {
-    assert(shift >= 0);
+    FMT_ASSERT(shift >= 0, "");
     exp_ += shift / bigit_bits;
     shift %= bigit_bits;
     if (shift == 0) return *this;
@@ -1396,7 +1392,7 @@ class bigint {
 
   // Assigns pow(10, exp) to this bigint.
   void assign_pow10(int exp) {
-    assert(exp >= 0);
+    FMT_ASSERT(exp >= 0, "");
     if (exp == 0) return assign(1);
     // Find the top bit.
     int bitmask = 1;
@@ -2567,11 +2563,11 @@ int snprintf_float(T value, int precision, float_specs specs,
       --exp_pos;
     } while (*exp_pos != 'e');
     char sign = exp_pos[1];
-    assert(sign == '+' || sign == '-');
+    FMT_ASSERT(sign == '+' || sign == '-', "");
     int exp = 0;
     auto p = exp_pos + 2;  // Skip 'e' and sign.
     do {
-      assert(is_digit(*p));
+      FMT_ASSERT(is_digit(*p), "");
       exp = exp * 10 + (*p++ - '0');
     } while (p != end);
     if (sign == '-') exp = -exp;
@@ -2587,54 +2583,6 @@ int snprintf_float(T value, int precision, float_specs specs,
     buf.try_resize(to_unsigned(fraction_size) + offset + 1);
     return exp - fraction_size;
   }
-}
-
-// A public domain branchless UTF-8 decoder by Christopher Wellons:
-// https://github.com/skeeto/branchless-utf8
-/* Decode the next character, c, from buf, reporting errors in e.
- *
- * Since this is a branchless decoder, four bytes will be read from the
- * buffer regardless of the actual length of the next character. This
- * means the buffer _must_ have at least three bytes of zero padding
- * following the end of the data stream.
- *
- * Errors are reported in e, which will be non-zero if the parsed
- * character was somehow invalid: invalid byte sequence, non-canonical
- * encoding, or a surrogate half.
- *
- * The function returns a pointer to the next character. When an error
- * occurs, this pointer will be a guess that depends on the particular
- * error, but it will always advance at least one byte.
- */
-inline const char* utf8_decode(const char* buf, uint32_t* c, int* e) {
-  static const int masks[] = {0x00, 0x7f, 0x1f, 0x0f, 0x07};
-  static const uint32_t mins[] = {4194304, 0, 128, 2048, 65536};
-  static const int shiftc[] = {0, 18, 12, 6, 0};
-  static const int shifte[] = {0, 6, 4, 2, 0};
-
-  int len = code_point_length(buf);
-  const char* next = buf + len;
-
-  // Assume a four-byte character and load four bytes. Unused bits are
-  // shifted out.
-  auto s = reinterpret_cast<const unsigned char*>(buf);
-  *c = uint32_t(s[0] & masks[len]) << 18;
-  *c |= uint32_t(s[1] & 0x3f) << 12;
-  *c |= uint32_t(s[2] & 0x3f) << 6;
-  *c |= uint32_t(s[3] & 0x3f) << 0;
-  *c >>= shiftc[len];
-
-  // Accumulate the various error conditions.
-  *e = (*c < mins[len]) << 6;       // non-canonical encoding
-  *e |= ((*c >> 11) == 0x1b) << 7;  // surrogate half?
-  *e |= (*c > 0x10FFFF) << 8;       // out of range?
-  *e |= (s[1] & 0xc0) >> 2;
-  *e |= (s[2] & 0xc0) >> 4;
-  *e |= (s[3]) >> 6;
-  *e ^= 0x2a;  // top two bits of each tail byte correct?
-  *e >>= shifte[len];
-
-  return next;
 }
 
 struct stringifier {
@@ -2678,10 +2626,7 @@ template <> struct formatter<detail::bigint> {
 };
 
 FMT_FUNC detail::utf8_to_utf16::utf8_to_utf16(string_view s) {
-  auto transcode = [this](const char* p) {
-    auto cp = uint32_t();
-    auto error = 0;
-    p = utf8_decode(p, &cp, &error);
+  for_each_codepoint(s, [this](uint32_t cp, int error) {
     if (error != 0) FMT_THROW(std::runtime_error("invalid utf8"));
     if (cp <= 0xFFFF) {
       buffer_.push_back(static_cast<wchar_t>(cp));
@@ -2690,21 +2635,7 @@ FMT_FUNC detail::utf8_to_utf16::utf8_to_utf16(string_view s) {
       buffer_.push_back(static_cast<wchar_t>(0xD800 + (cp >> 10)));
       buffer_.push_back(static_cast<wchar_t>(0xDC00 + (cp & 0x3FF)));
     }
-    return p;
-  };
-  auto p = s.data();
-  const size_t block_size = 4;  // utf8_decode always reads blocks of 4 chars.
-  if (s.size() >= block_size) {
-    for (auto end = p + s.size() - block_size + 1; p < end;) p = transcode(p);
-  }
-  if (auto num_chars_left = s.data() + s.size() - p) {
-    char buf[2 * block_size - 1] = {};
-    memcpy(buf, p, to_unsigned(num_chars_left));
-    p = buf;
-    do {
-      p = transcode(p);
-    } while (p - buf < num_chars_left);
-  }
+  });
   buffer_.push_back(0);
 }
 

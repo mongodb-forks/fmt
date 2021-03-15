@@ -1379,10 +1379,14 @@ template <typename T> struct formattable : std::false_type {};
 
 namespace detail {
 
+#if FMT_GCC_VERSION && FMT_GCC_VERSION < 500
 // A workaround for gcc 4.8 to make void_t work in a SFINAE context.
 template <typename... Ts> struct void_t_impl { using type = void; };
 template <typename... Ts>
 using void_t = typename detail::void_t_impl<Ts...>::type;
+#else
+template <typename...> using void_t = void;
+#endif
 
 template <typename It, typename T, typename Enable = void>
 struct is_output_iterator : std::false_type {};
@@ -1525,6 +1529,11 @@ using wformat_context = buffer_context<wchar_t>;
 #define FMT_BUFFER_CONTEXT(Char) \
   basic_format_context<detail::buffer_appender<Char>, Char>
 
+template <typename T, typename Char = char>
+using is_formattable = bool_constant<!std::is_same<
+    decltype(detail::arg_mapper<buffer_context<Char>>().map(std::declval<T>())),
+    detail::unformattable>::value>;
+
 /**
   \rst
   An array of references to arguments. It can be implicitly converted into
@@ -1610,8 +1619,9 @@ inline auto make_args_checked(const S& format_str,
 
 /**
   \rst
-  Returns a named argument to be used in a formatting function. It should only
-  be used in a call to a formatting function.
+  Returns a named argument to be used in a formatting function.
+  It should only be used in a call to a formatting function or
+  `dynamic_format_arg_store::push_back`.
 
   **Example**::
 
@@ -1856,11 +1866,11 @@ inline auto format_to_n(OutputIt out, size_t n, const S& format_str,
   Returns the number of characters in the output of
   ``format(format_str, args...)``.
  */
-template <typename... Args>
-inline size_t formatted_size(string_view format_str, Args&&... args) {
+template <typename S, typename... Args, typename Char = char_t<S>>
+inline size_t formatted_size(const S& format_str, Args&&... args) {
   const auto& vargs = fmt::make_args_checked<Args...>(format_str, args...);
   detail::counting_buffer<> buf;
-  detail::vformat_to(buf, format_str, vargs);
+  detail::vformat_to(buf, to_string_view(format_str), vargs);
   return buf.count();
 }
 

@@ -12,9 +12,11 @@
 #include <climits>
 #include <cmath>
 #include <cstring>
+#include <iterator>
 #include <list>
 #include <memory>
 #include <string>
+#include <type_traits>
 
 // Check if fmt/format.h compiles with windows.h included before it.
 #ifdef _WIN32
@@ -147,25 +149,6 @@ TEST(IteratorTest, CountingIterator) {
   EXPECT_EQ(prev.count(), 0);
   EXPECT_EQ(it.count(), 1);
   EXPECT_EQ((it + 41).count(), 42);
-}
-
-TEST(IteratorTest, TruncatingIterator) {
-  char* p = nullptr;
-  fmt::detail::truncating_iterator<char*> it(p, 3);
-  auto prev = it++;
-  EXPECT_EQ(prev.base(), p);
-  EXPECT_EQ(it.base(), p + 1);
-}
-
-TEST(IteratorTest, TruncatingBackInserter) {
-  std::string buffer;
-  auto bi = std::back_inserter(buffer);
-  fmt::detail::truncating_iterator<decltype(bi)> it(bi, 2);
-  *it++ = '4';
-  *it++ = '2';
-  *it++ = '1';
-  EXPECT_EQ(buffer.size(), 2);
-  EXPECT_EQ(buffer, "42");
 }
 
 TEST(IteratorTest, IsOutputIterator) {
@@ -868,7 +851,8 @@ TEST(FormatterTest, Width) {
   EXPECT_EQ("    0xcafe", format("{0:10}", reinterpret_cast<void*>(0xcafe)));
   EXPECT_EQ("x          ", format("{0:11}", 'x'));
   EXPECT_EQ("str         ", format("{0:12}", "str"));
-  EXPECT_EQ(format("{:*^5}", "🤡"), "**🤡**");
+  EXPECT_EQ(format("{:*^6}", "🤡"), "**🤡**");
+  EXPECT_EQ(format("{:*^8}", "你好"), "**你好**");
   EXPECT_EQ(format("{:#6}", 42.0), "  42.0");
   EXPECT_EQ(format("{:6c}", static_cast<int>('x')), "x     ");
   EXPECT_EQ(format("{:>06.0f}", 0.00884311), "000000");
@@ -1467,6 +1451,8 @@ TEST(FormatterTest, FormatUCharString) {
   EXPECT_EQ("test", format("{0:s}", ptr));
 }
 
+void function_pointer_test(int, double, std::string) {}
+
 TEST(FormatterTest, FormatPointer) {
   check_unknown_types(reinterpret_cast<void*>(0x1234), "p", "pointer");
   EXPECT_EQ("0x0", format("{0}", static_cast<void*>(nullptr)));
@@ -1479,6 +1465,9 @@ TEST(FormatterTest, FormatPointer) {
   EXPECT_EQ(format("{}", fmt::ptr(up.get())), format("{}", fmt::ptr(up)));
   std::shared_ptr<int> sp(new int(1));
   EXPECT_EQ(format("{}", fmt::ptr(sp.get())), format("{}", fmt::ptr(sp)));
+  EXPECT_EQ(
+      format("{}", fmt::detail::bit_cast<const void*>(&function_pointer_test)),
+      format("{}", fmt::ptr(function_pointer_test)));
   EXPECT_EQ("0x0", format("{}", nullptr));
 }
 
@@ -2560,7 +2549,7 @@ TEST(FormatTest, FormatUTF8Precision) {
   str_type str(reinterpret_cast<const fmt::detail::char8_type*>(
       u8"caf\u00e9s"));  // cafés
   auto result = fmt::format(format, str);
-  EXPECT_EQ(fmt::detail::count_code_points(result), 4);
+  EXPECT_EQ(fmt::detail::compute_width(result), 4);
   EXPECT_EQ(result.size(), 5);
   EXPECT_EQ(from_u8str(result), from_u8str(str.substr(0, 5)));
 }
