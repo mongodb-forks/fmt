@@ -95,8 +95,10 @@ class dynamic_format_arg_store
   };
 
   template <typename T>
-  using stored_type = conditional_t<detail::is_string<T>::value,
-                                    std::basic_string<char_type>, T>;
+  using stored_type = conditional_t<
+      std::is_convertible<T, std::basic_string<char_type>>::value &&
+          !detail::is_reference_wrapper<T>::value,
+      std::basic_string<char_type>, T>;
 
   // Storage of basic_format_arg must be contiguous.
   std::vector<basic_format_arg<Context>> data_;
@@ -141,6 +143,8 @@ class dynamic_format_arg_store
   }
 
  public:
+  constexpr dynamic_format_arg_store() = default;
+
   /**
     \rst
     Adds an argument into the dynamic store for later passing to a formatting
@@ -190,7 +194,7 @@ class dynamic_format_arg_store
   /**
     Adds named argument into the dynamic store for later passing to a formatting
     function. ``std::reference_wrapper`` is supported to avoid copying of the
-    argument. The name is always stored by reference.
+    argument. The name is always copied into the store.
   */
   template <typename T>
   void push_back(const detail::named_arg<char_type, T>& arg) {
